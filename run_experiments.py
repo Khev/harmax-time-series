@@ -12,7 +12,7 @@ import time
 import sys
 import logging
 
-TRAIN_SCRIPT = "temp.py"
+TRAIN_SCRIPT = "ucr_harmax_versus_softmax_lp.py"
 
 # ------------------------------------------------------------------ #
 logging.basicConfig(
@@ -39,8 +39,7 @@ def run_dataset(ds: str, seed: int, epochs: int, n_exp: int, lp: float):
         "--seed",    str(seed),
         "--epochs",  str(epochs),
         "--n_exp",   str(n_exp),
-        "--lp",      str(lp),
-        "--featurize"
+        "--lp",      str(lp)
     ]
     logging.info("▶ %s", " ".join(cmd))
     t0 = time.time()
@@ -67,7 +66,7 @@ def main():
     ap.add_argument("--seed",   type=int, default=0)
     ap.add_argument("--n_exp",  type=int, default=1,
                     help="harmonic exponent n")
-    ap.add_argument("--lp",     type=float, default=2.0,
+    ap.add_argument("--lp",     type=float, default=1.0,
                     help="Lp norm to use in HarMax (passed to TRAIN_SCRIPT)")
     args = ap.parse_args()
 

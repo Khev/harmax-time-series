@@ -166,7 +166,7 @@ class Wrap(nn.Module):
 # ------------------------------ main ---------------------------------
 def main():
     pa = argparse.ArgumentParser()
-    pa.add_argument('--dataset', default='bump3')
+    pa.add_argument('--dataset', default='ECG5000')
     pa.add_argument('--data_dir', default='')
     pa.add_argument('--epochs', type=int, default=400)
     pa.add_argument('--batch',  type=int, default=32)
