@@ -1,33 +1,40 @@
 #!/usr/bin/env python3
 # ---------------------------------------------------------------------
-# soft-max  vs.  harmax   on any univariate UCR dataset
+# soft-max vs. harmax on any univariate UCR dataset
 #   • trains both heads
 #   • saves weights       → models/<dataset>/
 #   • saves metrics JSON  → results/<dataset>_seed…json
 #   • saves plots         → figures/
+#   • supports early stopping
 # ---------------------------------------------------------------------
-import argparse, math, pathlib, random, json, warnings
+import argparse
+import math
+import pathlib
+import random
+import json
+import warnings
+import logging
 from typing import Tuple
-from sklearn.decomposition import PCA        # ⟨NEW⟩ for 2-D visualisation
+
 import numpy as np
 import torch
 import torch.nn as nn
 from torch.utils.data import TensorDataset, DataLoader
+from sklearn.decomposition import PCA        # for 2-D visualisation
 from scipy.stats import zscore
-import logging
 
 # force Agg backend so this works in headless
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-# ⟨NEW⟩ import our plotting utilities
+# our plotting utilities
 from utils.utils_plotting import (
     get_embeddings,
     plot_embeddings_comparison,
     plot_prototypes
 )
-
+# synthetic data generator
 from utils.utils_synthetic_datasets import make_synthetic_dataset
 
 # Configure logging: timestamps in YYYY-MM-DD HH:MM:SS format
@@ -37,7 +44,6 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S"
 )
 
-
 # optional aeon loader
 try:
     from aeon.datasets import load_classification
@@ -46,11 +52,12 @@ except ModuleNotFoundError:
     warnings.warn("aeon not found – will only load local .txt files")
 
 
-
 # ------------------------- misc helpers ------------------------------
 def set_seed(seed=0):
-    random.seed(seed); np.random.seed(seed)
-    torch.manual_seed(seed); torch.cuda.manual_seed_all(seed)
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
 
 
 def load_ucr_txt(path: pathlib.Path) -> Tuple[np.ndarray, np.ndarray]:
@@ -95,7 +102,6 @@ class Encoder1D(nn.Module):
             nn.AdaptiveAvgPool1d(1), nn.Flatten(),
             nn.Linear(128, d), nn.ReLU()
         )
-
     def forward(self, x):
         return self.net(x.unsqueeze(1))
 
@@ -104,7 +110,6 @@ class SoftmaxHead(nn.Module):
     def __init__(self, d, k):
         super().__init__()
         self.logits = nn.Linear(d, k)
-
     def forward(self, h):
         return self.logits(h)
 
@@ -114,12 +119,10 @@ class HarmaxHead(nn.Module):
         super().__init__()
         self.centres = nn.Parameter(torch.randn(k, d) / math.sqrt(d))
         self.n_exp = int(n) if n else int(math.sqrt(d))
-
     def probs(self, h):
         dist = torch.cdist(h, self.centres) + 1e-8
         inv = dist.pow(-self.n_exp)
         return inv / inv.sum(1, keepdim=True)
-
     def forward(self, h):
         return self.probs(h)
 
@@ -137,13 +140,20 @@ def run_epoch(model, is_h, loader, crit, opt, dev):
         if opt: opt.zero_grad()
         h = model.encoder(X)
         if is_h:
-            p = model.head(h); l = crit(p, y); pred = p.argmax(1)
+            p = model.head(h)
+            l = crit(p, y)
+            pred = p.argmax(1)
         else:
-            logit = model.head(h); l = crit(logit, y); pred = logit.argmax(1)
+            logit = model.head(h)
+            l = crit(logit, y)
+            pred = logit.argmax(1)
         if opt:
-            l.backward(); opt.step()
+            l.backward()
+            opt.step()
         b = y.size(0)
-        loss += l.item() * b; cor += (pred == y).sum().item(); tot += b
+        loss += l.item() * b
+        cor  += (pred == y).sum().item()
+        tot  += b
     return loss / tot, cor / tot
 
 
@@ -156,12 +166,12 @@ class Wrap(nn.Module):
 # ------------------------------ main ---------------------------------
 def main():
     pa = argparse.ArgumentParser()
-    pa.add_argument('--dataset', default='ECG200')
+    pa.add_argument('--dataset', default='bump3')
     pa.add_argument('--data_dir', default='')
-    pa.add_argument('--epochs', type=int, default=100)
+    pa.add_argument('--epochs', type=int, default=400)
     pa.add_argument('--batch',  type=int, default=32)
     pa.add_argument('--lr',     type=float, default=3e-3)
-    pa.add_argument('--wd',     type=float, default=1e-2)
+    pa.add_argument('--wd',     type=float, default=0)  # no weight decay
     pa.add_argument('--device', default='cuda' if torch.cuda.is_available() else 'cpu')
     pa.add_argument('--seed',   type=int, default=0)
     pa.add_argument('--n_exp',  type=float, default=None,
@@ -177,26 +187,22 @@ def main():
         dd = pathlib.Path(args.data_dir)
         Xtr, ytr = load_ucr_txt(dd / f"{args.dataset}_TRAIN.txt")
         Xte, yte = load_ucr_txt(dd / f"{args.dataset}_TEST.txt")
-        
-    elif args.dataset.lower() in ["bump3", "sine_freq", "step_pos", "square_duty"]:
-        # synthetic series
+    elif args.dataset.lower() in ["bump3", "sine_freq", "step_pos", "square_duty", "chirp", "dual_tone", "motif"]:
         Xtr, ytr = make_synthetic_dataset(args.dataset.lower(), seed=args.seed)
         Xte, yte = make_synthetic_dataset(args.dataset.lower(), seed=999 + args.seed)
-
     else:
         Xtr, ytr = load_dataset_aeon(args.dataset, "train")
         Xte, yte = load_dataset_aeon(args.dataset, "test")
 
     # remap labels → 0…C-1
     uniq = {lab: i for i, lab in enumerate(sorted(set(ytr)))}
-    ytr = np.vectorize(uniq.get)(ytr); yte = np.vectorize(uniq.get)(yte)
+    ytr = np.vectorize(uniq.get)(ytr)
+    yte = np.vectorize(uniq.get)(yte)
     n_cls = len(uniq)
 
-    # ⟨NEW⟩ keep raw for prototype plotting
+    # keep raw test for prototype plots
     Xte_raw = Xte.copy()
 
-    # per-series z-score
-    #Xtr, Xte = zscore(Xtr, axis=1), zscore(Xte, axis=1)
     print(f"{args.dataset}: {Xtr.shape} → {n_cls} classes")
 
     tr_dl = DataLoader(TensorDataset(torch.tensor(Xtr), torch.tensor(ytr)),
@@ -209,39 +215,65 @@ def main():
         "harmax" : Wrap(Encoder1D(64), HarmaxHead(64, n_cls, args.n_exp), True)
     }
     crit = {"softmax": nn.CrossEntropyLoss(), "harmax": HarmonicLoss()}
-    opt  = {n: torch.optim.AdamW(m.parameters(), lr=args.lr,
-                                 weight_decay=args.wd if n == "softmax" else 0.0)
-            for n, m in models.items()}
+    opt  = {
+        n: torch.optim.AdamW(
+            m.parameters(), lr=args.lr,
+            weight_decay=(args.wd if n=="softmax" else 0.0)
+        ) for n,m in models.items()
+    }
+
     hist = {n: {"tr": [], "te": []} for n in models}
+
+    # early‐stop parameters
+    patience = 20
+    best_te   = 0.0
+    wait      = 0
 
     # ------------------ training loop -----------------
     for ep in range(1, args.epochs + 1):
         for n, m in models.items():
             m.to(dev)
-            tr_l, tr_a = run_epoch(m, m.is_harmax, tr_dl, crit[n], opt[n], dev)
-            te_l, te_a = run_epoch(m, m.is_harmax, te_dl, crit[n], None, dev)
-            hist[n]['tr'].append(tr_a); hist[n]['te'].append(te_a)
+            _, tr_a = run_epoch(m, m.is_harmax, tr_dl, crit[n], opt[n], dev)
+            _, te_a = run_epoch(m, m.is_harmax, te_dl, crit[n], None,   dev)
+            hist[n]['tr'].append(tr_a)
+            hist[n]['te'].append(te_a)
+
+        # monitor HarMax’s test‐accuracy for early stopping
+        current = hist['harmax']['te'][-1]
+        if current > best_te + 1e-6:
+            best_te = current
+            wait = 0
+        else:
+            wait += 1
+
         if ep % 50 == 0 or ep == 1:
-            logging.info(f"Ep {ep:3d}  " +
-                  " ".join(f"{n}:{hist[n]['te'][-1]*100:.1f}%" for n in models))
+            logging.info(f"Ep {ep:3d} softmax: {hist['harmax']['te'][-1]:.2f} | harmax: {current:.2f}% ")
+
+        if wait >= patience:
+            logging.info(f"Stopping early at epoch {ep} (no improvement for {patience} epochs)")
+            break
+    else:
+        ep = args.epochs
 
     har_n = models['harmax'].head.n_exp
 
     # ------------------ plots -------------------------
     if not args.no_plot:
-        xs = np.arange(1, args.epochs + 1)
+        xs = np.arange(1, ep + 1)
         fig, ax = plt.subplots(2, 1, figsize=(6, 6), sharex=True)
         for i, name in enumerate(["softmax", "harmax"]):
-            ax[i].plot(xs, hist[name]['tr'], c='tab:blue', label='train')
-            ax[i].plot(xs, hist[name]['te'], c='tab:orange', label='test')
-            ax[i].set_ylim(0, 1.05); ax[i].set_title(name); ax[i].legend()
+            ax[i].plot(xs, hist[name]['tr'][:ep], c='tab:blue', label='train')
+            ax[i].plot(xs, hist[name]['te'][:ep], c='tab:orange', label='test')
+            ax[i].set_ylim(0, 1.05)
+            ax[i].set_title(name)
+            ax[i].legend()
         ax[1].set_xlabel("Epoch")
         pathlib.Path("figures").mkdir(exist_ok=True)
         fig.tight_layout()
         fig.savefig(f"figures/{args.dataset}_acc_n{har_n}.png", dpi=120)
         plt.close(fig)
 
-        # ⟨NEW⟩ embeddings + t-SNE comparison
+        # embeddings + t-SNE comparison
         har_emb, har_lbls = get_embeddings(models['harmax'], te_dl, dev)
         soft_emb, _       = get_embeddings(models['softmax'], te_dl, dev)
         plot_embeddings_comparison(
@@ -253,7 +285,7 @@ def main():
             save_path=pathlib.Path(f"figures/{args.dataset}_embeddings.png")
         )
 
-        # ⟨NEW⟩ representative prototypes
+        # representative prototypes
         plot_prototypes(
             X_raw=Xte_raw,
             labels=har_lbls,
@@ -272,24 +304,25 @@ def main():
                    mdl_dir / f"{name}_seed{args.seed}_n{har_n}.pth")
 
     # ------------------ save metrics ------------------
-    half = args.epochs // 2
+    half = ep // 2
     metrics = {
-        "dataset": args.dataset, "seed": args.seed, "n_exp": har_n,
-        "soft_hist_tr": hist['softmax']['tr'],
-        "soft_hist_te": hist['softmax']['te'],
-        "har_hist_tr":  hist['harmax']['tr'],
-        "har_hist_te":  hist['harmax']['te'],
-        "soft_last_te": float(hist['softmax']['te'][-1]),
-        "har_last_te":  float(hist['harmax']['te'][-1]),
-        "soft_mean_te": float(np.mean(hist['softmax']['te'][half:])),
-        "har_mean_te":  float(np.mean(hist['harmax']['te'][half:])),
+        "dataset":      args.dataset,
+        "seed":         args.seed,
+        "n_exp":        har_n,
+        "soft_hist_tr": hist['softmax']['tr'][:ep],
+        "soft_hist_te": hist['softmax']['te'][:ep],
+        "har_hist_tr":  hist['harmax']['tr'][:ep],
+        "har_hist_te":  hist['harmax']['te'][:ep],
+        "soft_last_te": float(hist['softmax']['te'][ep-1]),
+        "har_last_te":  float(hist['harmax']['te'][ep-1]),
+        "soft_mean_te": float(np.mean(hist['softmax']['te'][half:ep])),
+        "har_mean_te":  float(np.mean(hist['harmax']['te'][half:ep])),
     }
     res_dir = pathlib.Path("results"); res_dir.mkdir(exist_ok=True)
     with (res_dir / f"{args.dataset}_seed{args.seed}_n{har_n}.json").open("w") as f:
         json.dump(metrics, f, indent=2)
 
-    logging.info('Finished')
-
+    logging.info("Finished")
 
 if __name__ == "__main__":
     main()

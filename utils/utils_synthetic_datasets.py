@@ -4,7 +4,7 @@ from typing import Tuple
 
 def make_synthetic_dataset(name: str, seed: int):
     """
-    Dispatch to one of our four synthetic generators.
+    Dispatch to one of our synthetic generators.
     """
     name = name.lower()
     if name == 'bump3':
@@ -15,8 +15,14 @@ def make_synthetic_dataset(name: str, seed: int):
         return make_step_pos_dataset(seed=seed)
     elif name == 'square_duty':
         return make_square_duty_dataset(seed=seed)
+    elif name == 'chirp':
+        return make_chirp_dataset(seed=seed)
+    elif name == 'dual_tone':
+        return make_dual_tone_dataset(seed=seed)
+    elif name == 'motif':
+        return make_motif_dataset(seed=seed)
     else:
-        raise ValueError(f"Unknown synthetic dataset '{name}' ")
+        raise ValueError(f"Unknown synthetic dataset '{name}'")
 
 
 def make_sine_freq_dataset(
@@ -62,7 +68,6 @@ def make_step_pos_dataset(
     return np.array(X, dtype='float32')[idx], np.array(y, dtype='int64')[idx]
 
 
-
 def make_square_duty_dataset(
     samples_per_class=300,
     length=128,
@@ -81,14 +86,12 @@ def make_square_duty_dataset(
         high_len  = int(period * duty)
         low_len   = period - high_len
         prot = np.tile(np.concatenate([np.ones(high_len), np.zeros(low_len)]), n_periods)
-        # pad if needed
         prot = np.pad(prot, (0, max(0, length-len(prot))), mode='wrap')[:length]
         for _ in range(samples_per_class):
             X.append(prot + rng.normal(0, noise_std, size=length))
             y.append(k)
     idx = rng.permutation(len(y))
     return np.array(X, dtype='float32')[idx], np.array(y, dtype='int64')[idx]
-
 
 
 def make_bump3_dataset(
@@ -98,18 +101,15 @@ def make_bump3_dataset(
         seed=0
     ) -> Tuple[np.ndarray, np.ndarray]:
     """
-    Class 0: one Gaussian at t=bump_locs[0]
-    Class 1: one Gaussian at t=bump_locs[1]
+    Class 0: one Gaussian bump at t=bump_locs[0]
+    Class 1: one Gaussian bump at t=bump_locs[1]
     Class 2: sum of both bumps.
     """
     rng = np.random.default_rng(seed)
     t = np.arange(length)
-
-    # build prototypes
     P0 = np.exp(-(t - bump_locs[0])**2 / (2*sigma**2))
     P1 = np.exp(-(t - bump_locs[1])**2 / (2*sigma**2))
     protos = [P0, P1, P0 + P1]
-
     X, y = [], []
     for cls, proto in enumerate(protos):
         for _ in range(samples_per_class):
@@ -117,10 +117,102 @@ def make_bump3_dataset(
             noise = rng.normal(0, noise_std, size=length)
             X.append(a * proto + noise)
             y.append(cls)
-
-    X = np.stack(X).astype("float32")
-    y = np.array(y, dtype="int64")
-    # shuffle
+    X = np.stack(X).astype('float32')
+    y = np.array(y, dtype='int64')
     idx = rng.permutation(len(y))
     return X[idx], y[idx]
 
+
+# ---- new datasets ----
+
+def make_chirp_dataset(
+    samples_per_class=300,
+    length=128,
+    f_start=2.0,
+    f_end=20.0,
+    constant_freq=11.0,
+    noise_std=0.1,
+    seed=0
+):
+    """
+    Class 0: linear up-chirp from f_start→f_end
+    Class 1: linear down-chirp from f_end→f_start
+    Class 2: constant tone at constant_freq
+    """
+    rng = np.random.default_rng(seed)
+    t = np.linspace(0, 1, length, endpoint=False)
+    # generate instantaneous phase for chirps
+    up = np.sin(2*np.pi * (f_start + (f_end - f_start)*t) * t)
+    down = np.sin(2*np.pi * (f_end - (f_end - f_start)*t) * t)
+    const = np.sin(2*np.pi * constant_freq * t)
+    protos = [up, down, const]
+    X, y = [], []
+    for k, proto in enumerate(protos):
+        for _ in range(samples_per_class):
+            X.append(proto + rng.normal(0, noise_std, size=length))
+            y.append(k)
+    idx = rng.permutation(len(y))
+    return np.array(X, dtype='float32')[idx], np.array(y, dtype='int64')[idx]
+
+
+def make_dual_tone_dataset(
+    samples_per_class=300,
+    length=128,
+    tones0=(5.0, 15.0),
+    tones1=(10.0, 20.0),
+    noise_std=0.1,
+    seed=0
+):
+    """
+    Class 0: sum of two fixed tones tones0
+    Class 1: sum of two fixed tones tones1
+    Class 2: sum of all four tones
+    """
+    rng = np.random.default_rng(seed)
+    t = np.linspace(0, 1, length, endpoint=False)
+    t0 = np.sin(2*np.pi*tones0[0]*t) + np.sin(2*np.pi*tones0[1]*t)
+    t1 = np.sin(2*np.pi*tones1[0]*t) + np.sin(2*np.pi*tones1[1]*t)
+    t2 = t0 + t1
+    protos = [t0, t1, t2]
+    X, y = [], []
+    for k, proto in enumerate(protos):
+        for _ in range(samples_per_class):
+            X.append(proto + rng.normal(0, noise_std, size=length))
+            y.append(k)
+    idx = rng.permutation(len(y))
+    return np.array(X, dtype='float32')[idx], np.array(y, dtype='int64')[idx]
+
+
+def make_motif_dataset(
+    samples_per_class=300,
+    length=128,
+    pulse_width=5,
+    period=20,
+    seed=0
+):
+    """
+    Class 0: repeating triangular 'spike' every period
+    Class 1: repeating inverted triangular 'valley'
+    Class 2: alternating spike + valley
+    """
+    rng = np.random.default_rng(seed)
+    X, y = [], []
+    # build spike and valley shapes
+    spike = np.concatenate([np.linspace(0,1,pulse_width), np.linspace(1,0,pulse_width)])
+    valley = 1 - spike
+    q = length // period
+    for k in range(3):
+        base = []
+        for i in range(q):
+            if k==0:
+                base.extend(spike)
+            elif k==1:
+                base.extend(valley)
+            else:
+                base.extend(spike if i%2==0 else valley)
+        base = np.array(base + [0]*(length-len(base)))[:length]
+        for _ in range(samples_per_class):
+            X.append(base + rng.normal(0, 0.05, size=length))
+            y.append(k)
+    idx = rng.permutation(len(y))
+    return np.array(X, dtype='float32')[idx], np.array(y, dtype='int64')[idx]

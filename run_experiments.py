@@ -16,7 +16,7 @@ logging.basicConfig(
 )
 
 def cache_path(ds: str, seed: int, n_exp: int) -> pathlib.Path:
-    return pathlib.Path("results") / f"{ds}_seed{seed}_n_harmonic_{n_exp}.json"
+    return pathlib.Path("results") / f"{ds}_seed{seed}_n{n_exp}.json"
 
 def run_dataset(ds: str, seed: int, epochs: int, n_exp: int):
     """Execute training unless cached metrics already exist."""
@@ -34,7 +34,10 @@ def run_dataset(ds: str, seed: int, epochs: int, n_exp: int):
     logging.info("▶ %s", " ".join(cmd))
     t0 = time.time()
     subprocess.run(cmd, check=True)
-    logging.info("[%-15s] finished in %.1fs", ds, time.time() - t0)
+    elapsed = time.time() - t0
+    mins = int(elapsed // 60)
+    secs = elapsed % 60
+    logging.info("[%-15s] finished in %dm%.1fs", ds, mins, secs)
 
 def load_metrics(ds: str, seed: int, n_exp: int):
     with cache_path(ds, seed, n_exp).open() as f:
@@ -48,21 +51,19 @@ def main():
     #     "ShapeletSim", "Plane", "OliveOil", "FordA",
     #     "StarLightCurves", "HandOutlines",
     # ])
-    # ap.add_argument("--datasets", nargs="+", default=[
-    #     "SyntheticControl",
-    #     "ShapeletSim",
-    #     "TwoPatterns",
-    #     "Coffee",
-    #     "OliveOil",
-    #     "bump3",
-    # ])
     ap.add_argument("--datasets", nargs="+", default=[
-        "bump3","sine_freq","step_pos", "square_duty"
+        "SyntheticControl",
+        "ShapeletSim",
+        "TwoPatterns",
+        "Coffee",
+        "OliveOil"
     ])
+    # ap.add_argument("--datasets", nargs="+", default=[
+    #     "chirp","dual_tone","motif"
+    # ])
     ap.add_argument("--epochs", type=int, default=100)
     ap.add_argument("--seed",   type=int, default=0)
-    ap.add_argument("--n_exp",  type=int, default=1,
-                    help="harmonic exponent n passed to the training script")
+    ap.add_argument("--n_exp",  type=int, default=1, help="harmonic exponent n")
     args = ap.parse_args()
 
     pathlib.Path("results").mkdir(exist_ok=True)
