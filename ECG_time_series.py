@@ -12,6 +12,7 @@ from torch.utils.data import TensorDataset, DataLoader
 import matplotlib.pyplot as plt
 from sklearn.decomposition import PCA
 from scipy.stats import zscore
+from utils.utils_plotting import plot_embeddings_comparison, plot_prototypes, get_embeddings
 
 # ------------------------------- utils --------------------------------
 def set_seed(seed: int = 0):
@@ -175,6 +176,18 @@ def main():
             s = " | ".join([f"{n}: {hist[n]['te'][-1]*100:.1f}%" for n in models])
             print(f"Epoch {epoch:3d}  test-acc  {s}")
 
+
+    # Create directory for saving models
+    model_dir = pathlib.Path('models')
+    model_dir.mkdir(exist_ok=True)
+
+    # Save the trained models
+    n_exp_str = str(args.n_exp if args.n_exp is not None else int(math.sqrt(64)))
+    torch.save(models['softmax'].state_dict(), model_dir / f'ecg200_softmax.pt')
+    torch.save(models['harmax'].state_dict(), model_dir / f'ecg200_harmax_n{n_exp_str}.pt')
+    print(f"Saved models to {model_dir / 'ecg200_softmax.pt'} and {model_dir / f'ecg200_harmax_n{n_exp_str}.pt'}")
+
+
     # -------------------------------- plots ---------------------------
     xs = np.arange(1, args.epochs + 1)
 
@@ -206,28 +219,38 @@ def main():
     print(f"Saved {fig_path}")
 
 
-    # ---------- optional PCA of class-vectors ------------------------
-    def class_vecs(mod):
-        if mod.is_harmax: return mod.head.centres.detach().cpu()
-        else:             return mod.head.logits.weight.detach().cpu()
-    fig, ax = plt.subplots(1,2,figsize=(8,4))
-    for i,(name,mod) in enumerate(models.items()):
-        vec = class_vecs(mod)
-        pcs = PCA(2).fit_transform(vec)
-        ev  = PCA(2).fit(vec).explained_variance_ratio_.sum()*100
-        ax[i].scatter(pcs[:,0], pcs[:,1], s=30)
-        for j,(x,y) in enumerate(pcs): ax[i].text(x,y,str(j),ha='center',va='center',fontsize=7)
-        ax[i].set_aspect('equal'); ax[i].set_title(f"{name}  EV:{ev:.0f}%")
-    plt.tight_layout(); plt.savefig(f'figures/ecg200_pca_{args.n_exp}.png', dpi=120)
-    print('Saved ecg200_pca.png')
+    # --- embeddings + t-SNE comparison ---
+    harmax_emb, harmax_lbls = get_embeddings(models['harmax'], te_dl, device)
+    softmax_emb, _           = get_embeddings(models['softmax'], te_dl, device)
+    plot_embeddings_comparison(
+        harmax_embeddings=harmax_emb,
+        softmax_embeddings=softmax_emb,
+        labels=harmax_lbls,
+        harmax_centres=models['harmax'].head.centres.detach().cpu().numpy(),
+        softmax_weights=models['softmax'].head.logits.weight.detach().cpu().numpy(),
+        save_path=pathlib.Path('figures/ecg200_embeddings_comparison_equal_sizes.png')
+    )
+
+    # --- representative prototypes ---
+    Xte_raw, yte_raw = load_ucr_txt(data_dir/'ECG200_TEST.txt')  # no z-score
+    plot_prototypes(
+        X_raw=Xte_raw,
+        labels=harmax_lbls,
+        harmax_embeddings=harmax_emb,
+        harmax_centres=models['harmax'].head.centres.detach().cpu().numpy(),
+        softmax_embeddings=softmax_emb,
+        softmax_weights=models['softmax'].head.logits.weight.detach().cpu().numpy(),
+        save_path=pathlib.Path('figures/ecg200_prototypes_with_actual_comparison_fixed.png')
+    )
+
 
     # --- emit history for the tuning wrapper ---------------------------
-    print("RESULTS:", json.dumps({
-            "harmax_tr": hist['harmax']['tr'],
-            "harmax_te": hist['harmax']['te'],
-            "soft_tr"  : hist['softmax']['tr'],
-            "soft_te"  : hist['softmax']['te']
-    }))
+    # print("RESULTS:", json.dumps({
+    #         "harmax_tr": hist['harmax']['tr'],
+    #         "harmax_te": hist['harmax']['te'],
+    #         "soft_tr"  : hist['softmax']['tr'],
+    #         "soft_te"  : hist['softmax']['te']
+    # }))
 
 if __name__ == "__main__":
     main()
