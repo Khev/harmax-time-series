@@ -268,6 +268,26 @@ def main():
     print(f" HarMax  AUC={auc_h:.3f}  AP={ap_h:.3f}")
     print(f" Softmax AUC={auc_s:.3f}  AP={ap_s:.3f}")
 
+    # ---------------- save learning curves --------------------------
+    accs_h, accs_s = [], []
+    for ep in range(1, ep + 1):
+        accs_h.append(accuracy(enc_h, head_h, True, train_dl, dev))
+        accs_s.append(accuracy(enc_s, head_s, False, train_dl, dev))
+
+    fig, ax = plt.subplots(2, 1, figsize=(6, 6), sharex=True)
+    ax[0].plot(accs_s, label="Softmax train acc", color='tab:orange')
+    ax[1].plot(accs_h, label="HarMax train acc", color='tab:blue')
+    ax[0].set_title("Softmax"); ax[1].set_title("HarMax")
+    ax[1].set_xlabel("Epoch")
+    for a in ax:
+        a.set_ylim(0, 1.05)
+        a.set_ylabel("Train Accuracy")
+        a.legend()
+    fig.tight_layout()
+    fig.savefig(out_fig / f"{args.dataset}_held{novel}_train_acc.png", dpi=120)
+    plt.close(fig)
+
+
     # ---------------- save JSON & ROC plot --------------------------
     out_res = pathlib.Path("results") / "anomaly"
     out_fig = pathlib.Path("figures") / "anomaly"
