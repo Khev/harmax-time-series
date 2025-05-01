@@ -2,9 +2,10 @@
 # ---------------------------------------------------------------------
 # soft-max vs. harmax on any univariate UCR dataset
 #   • trains both heads
-#   • saves weights       → models/<dataset>/
-#   • saves metrics JSON  → results/<dataset>_seed…json
-#   • saves plots         → figures/
+#   • supports arbitrary Lp norms in HarMax (--lp, default=2)
+#   • saves weights       → models/L_{lp}/<dataset>/
+#   • saves metrics JSON  → results/L_{lp}/<dataset>_seed…json
+#   • saves plots         → figures/L_{lp}/
 #   • supports early stopping
 # ---------------------------------------------------------------------
 import argparse
@@ -36,13 +37,6 @@ from utils.utils_plotting import (
 )
 # synthetic data generator
 from utils.utils_synthetic_datasets import make_synthetic_dataset
-
-# Configure logging: timestamps in YYYY-MM-DD HH:MM:SS format
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s  %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S"
-)
 
 # optional aeon loader
 try:
@@ -115,16 +109,23 @@ class SoftmaxHead(nn.Module):
 
 
 class HarmaxHead(nn.Module):
-    def __init__(self, d, k, n=None):
+    def __init__(self, d, k, lp: float, n_exp=None):
+        """
+        d: embedding dim, k: num classes,
+        lp: Lp norm (p >=1 or float('inf')),
+        n_exp: harmonic exponent (default sqrt(d))
+        """
         super().__init__()
         self.centres = nn.Parameter(torch.randn(k, d) / math.sqrt(d))
-        self.n_exp = int(n) if n else int(math.sqrt(d))
-    def probs(self, h):
-        dist = torch.cdist(h, self.centres) + 1e-8
+        self.lp = lp
+        self.n_exp = int(n_exp) if n_exp else int(math.sqrt(d))
+
+    def forward(self, h):
+        # h: (B,d), centres: (k,d)
+        # compute pairwise Lp distance
+        dist = torch.cdist(h, self.centres, p=self.lp) + 1e-8
         inv = dist.pow(-self.n_exp)
         return inv / inv.sum(1, keepdim=True)
-    def forward(self, h):
-        return self.probs(h)
 
 
 class HarmonicLoss(nn.Module):
@@ -134,27 +135,29 @@ class HarmonicLoss(nn.Module):
 
 def run_epoch(model, is_h, loader, crit, opt, dev):
     model.train(bool(opt))
-    tot = cor = loss = 0
+    tot = cor = 0
+    loss_sum = 0.0
     for X, y in loader:
         X, y = X.to(dev), y.to(dev)
-        if opt: opt.zero_grad()
+        if opt:
+            opt.zero_grad()
         h = model.encoder(X)
         if is_h:
             p = model.head(h)
             l = crit(p, y)
             pred = p.argmax(1)
         else:
-            logit = model.head(h)
-            l = crit(logit, y)
-            pred = logit.argmax(1)
+            logits = model.head(h)
+            l = crit(logits, y)
+            pred = logits.argmax(1)
         if opt:
             l.backward()
             opt.step()
         b = y.size(0)
-        loss += l.item() * b
-        cor  += (pred == y).sum().item()
-        tot  += b
-    return loss / tot, cor / tot
+        loss_sum += l.item() * b
+        cor += (pred == y).sum().item()
+        tot += b
+    return loss_sum / tot, cor / tot
 
 
 class Wrap(nn.Module):
@@ -166,18 +169,28 @@ class Wrap(nn.Module):
 # ------------------------------ main ---------------------------------
 def main():
     pa = argparse.ArgumentParser()
-    pa.add_argument('--dataset', default='bump3')
+    pa.add_argument('--dataset',  default='ECG5000')
     pa.add_argument('--data_dir', default='')
-    pa.add_argument('--epochs', type=int, default=400)
-    pa.add_argument('--batch',  type=int, default=32)
-    pa.add_argument('--lr',     type=float, default=3e-3)
-    pa.add_argument('--wd',     type=float, default=0)  # no weight decay
-    pa.add_argument('--device', default='cuda' if torch.cuda.is_available() else 'cpu')
-    pa.add_argument('--seed',   type=int, default=0)
-    pa.add_argument('--n_exp',  type=float, default=None,
+    pa.add_argument('--epochs',   type=int,   default=50)
+    pa.add_argument('--batch',    type=int,   default=32)
+    pa.add_argument('--lr',       type=float, default=3e-3)
+    pa.add_argument('--wd',       type=float, default=0.0)
+    pa.add_argument('--device',   default='cuda' if torch.cuda.is_available() else 'cpu')
+    pa.add_argument('--seed',     type=int,   default=0)
+    pa.add_argument('--n_exp',    type=float, default=None,
                     help='harmonic exponent n (default √d)')
-    pa.add_argument('--no_plot', action='store_true')
+    pa.add_argument('--lp',       type=str,   default='2',
+                    help="Lp norm for HarMax (e.g. 1, 2, inf)")
+    pa.add_argument('--no_plot',  action='store_true')
     args = pa.parse_args()
+
+    # parse lp argument
+    lp_str = args.lp.lower()
+    if lp_str == 'inf':
+        lp = float('inf')
+    else:
+        lp = float(lp_str)
+    norm_dir = f"L_{lp_str}"
 
     set_seed(args.seed)
     dev = torch.device(args.device)
@@ -187,7 +200,9 @@ def main():
         dd = pathlib.Path(args.data_dir)
         Xtr, ytr = load_ucr_txt(dd / f"{args.dataset}_TRAIN.txt")
         Xte, yte = load_ucr_txt(dd / f"{args.dataset}_TEST.txt")
-    elif args.dataset.lower() in ["bump3", "sine_freq", "step_pos", "square_duty", "chirp", "dual_tone", "motif"]:
+    elif args.dataset.lower() in [
+        "bump3","sine_freq","step_pos","square_duty","chirp","dual_tone","motif"
+    ]:
         Xtr, ytr = make_synthetic_dataset(args.dataset.lower(), seed=args.seed)
         Xte, yte = make_synthetic_dataset(args.dataset.lower(), seed=999 + args.seed)
     else:
@@ -200,126 +215,125 @@ def main():
     yte = np.vectorize(uniq.get)(yte)
     n_cls = len(uniq)
 
-    # keep raw test for prototype plots
     Xte_raw = Xte.copy()
+    print(f"{args.dataset} [L_{lp_str}]: {Xtr.shape} → {n_cls} classes")
 
-    print(f"{args.dataset}: {Xtr.shape} → {n_cls} classes")
-
+    # ── data loaders
     tr_dl = DataLoader(TensorDataset(torch.tensor(Xtr), torch.tensor(ytr)),
                        batch_size=args.batch, shuffle=True)
     te_dl = DataLoader(TensorDataset(torch.tensor(Xte), torch.tensor(yte)),
                        batch_size=args.batch)
 
+    # ── models
+    enc = Encoder1D(64)
     models = {
-        "softmax": Wrap(Encoder1D(64), SoftmaxHead(64, n_cls), False),
-        "harmax" : Wrap(Encoder1D(64), HarmaxHead(64, n_cls, args.n_exp), True)
+        "softmax": Wrap(enc, SoftmaxHead(64, n_cls), False),
+        "harmax" : Wrap(enc, HarmaxHead(64, n_cls, lp, args.n_exp), True)
     }
-    crit = {"softmax": nn.CrossEntropyLoss(), "harmax": HarmonicLoss()}
-    opt  = {
-        n: torch.optim.AdamW(
+    crit = {
+        "softmax": nn.CrossEntropyLoss(),
+        "harmax" : HarmonicLoss()
+    }
+    opt = {
+        name: torch.optim.AdamW(
             m.parameters(), lr=args.lr,
-            weight_decay=(args.wd if n=="softmax" else 0.0)
-        ) for n,m in models.items()
+            weight_decay=(args.wd if name=="softmax" else 0.0)
+        )
+        for name, m in models.items()
     }
 
+    # ── training loop w/ early stopping
     hist = {n: {"tr": [], "te": []} for n in models}
-
-    # early‐stop parameters
-    patience = 20
-    best_te   = 0.0
-    wait      = 0
-
-    # ------------------ training loop -----------------
+    patience, best_te, wait = 20, 0.0, 0
     for ep in range(1, args.epochs + 1):
-        for n, m in models.items():
+        for name, m in models.items():
             m.to(dev)
-            _, tr_a = run_epoch(m, m.is_harmax, tr_dl, crit[n], opt[n], dev)
-            _, te_a = run_epoch(m, m.is_harmax, te_dl, crit[n], None,   dev)
-            hist[n]['tr'].append(tr_a)
-            hist[n]['te'].append(te_a)
+            _, tr_a = run_epoch(m, m.is_harmax, tr_dl, crit[name], opt[name], dev)
+            _, te_a = run_epoch(m, m.is_harmax, te_dl, crit[name], None,      dev)
+            hist[name]["tr"].append(tr_a)
+            hist[name]["te"].append(te_a)
 
-        # monitor HarMax’s test‐accuracy for early stopping
-        current = hist['harmax']['te'][-1]
+        current = hist["harmax"]["te"][-1]
         if current > best_te + 1e-6:
-            best_te = current
-            wait = 0
+            best_te, wait = current, 0
         else:
             wait += 1
 
         if ep % 50 == 0 or ep == 1:
-            logging.info(f"Ep {ep:3d} softmax: {hist['harmax']['te'][-1]:.2f} | harmax: {current:.2f} ")
+            logging.info(f"Ep {ep:3d}  softmax={hist['softmax']['te'][-1]:.3f}"
+                         f"  harmax={current:.3f}")
 
         if wait >= patience:
-            logging.info(f"Stopping early at epoch {ep} (no improvement for {patience} epochs)")
+            logging.info(f"Early stopping at ep {ep} (no improve for {patience})")
             break
     else:
         ep = args.epochs
 
-    har_n = models['harmax'].head.n_exp
+    har_n = models["harmax"].head.n_exp
 
-    # ------------------ plots -------------------------
+    # ── plotting
     if not args.no_plot:
-        xs = np.arange(1, ep + 1)
-        fig, ax = plt.subplots(2, 1, figsize=(6, 6), sharex=True)
-        for i, name in enumerate(["softmax", "harmax"]):
-            ax[i].plot(xs, hist[name]['tr'][:ep], c='tab:blue', label='train')
-            ax[i].plot(xs, hist[name]['te'][:ep], c='tab:orange', label='test')
-            ax[i].set_ylim(0, 1.05)
-            ax[i].set_title(name)
-            ax[i].legend()
+        base_fig = pathlib.Path("figures")/norm_dir
+        base_fig.mkdir(parents=True, exist_ok=True)
+
+        xs = np.arange(1, ep+1)
+        fig, ax = plt.subplots(2,1,figsize=(6,6), sharex=True)
+        for i,name in enumerate(["softmax","harmax"]):
+            ax[i].plot(xs, hist[name]["tr"][:ep], label="train")
+            ax[i].plot(xs, hist[name]["te"][:ep], label="test")
+            ax[i].set_title(name); ax[i].set_ylim(0,1.05); ax[i].legend()
         ax[1].set_xlabel("Epoch")
-        pathlib.Path("figures").mkdir(exist_ok=True)
         fig.tight_layout()
-        fig.savefig(f"figures/{args.dataset}_acc_n{har_n}.png", dpi=120)
+        fig.savefig(base_fig/f"{args.dataset}_acc_lp{lp_str}_n{har_n}.png", dpi=120)
         plt.close(fig)
 
-        # embeddings + t-SNE comparison
-        har_emb, har_lbls = get_embeddings(models['harmax'], te_dl, dev)
-        soft_emb, _       = get_embeddings(models['softmax'], te_dl, dev)
+        # embeddings + prototypes
+        har_emb, har_lbls = get_embeddings(models["harmax"], te_dl, dev)
+        soft_emb, _      = get_embeddings(models["softmax"], te_dl, dev)
+
         plot_embeddings_comparison(
             harmax_embeddings=har_emb,
             softmax_embeddings=soft_emb,
             labels=har_lbls,
-            harmax_centres=models['harmax'].head.centres.detach().cpu().numpy(),
-            softmax_weights=models['softmax'].head.logits.weight.detach().cpu().numpy(),
-            save_path=pathlib.Path(f"figures/{args.dataset}_embeddings.png")
+            harmax_centres=models["harmax"].head.centres.detach().cpu().numpy(),
+            softmax_weights=models["softmax"].head.logits.weight.detach().cpu().numpy(),
+            save_path=base_fig/f"{args.dataset}_emb_lp{lp_str}_emb.png"
         )
-
-        # representative prototypes
         plot_prototypes(
             X_raw=Xte_raw,
             labels=har_lbls,
             harmax_embeddings=har_emb,
-            harmax_centres=models['harmax'].head.centres.detach().cpu().numpy(),
+            harmax_centres=models["harmax"].head.centres.detach().cpu().numpy(),
             softmax_embeddings=soft_emb,
-            softmax_weights=models['softmax'].head.logits.weight.detach().cpu().numpy(),
-            save_path=pathlib.Path(f"figures/{args.dataset}_prototypes.png")
+            softmax_weights=models["softmax"].head.logits.weight.detach().cpu().numpy(),
+            save_path=base_fig/f"{args.dataset}_prot_lp{lp_str}.png"
         )
 
-    # ------------------ save weights ------------------
-    mdl_dir = pathlib.Path("models") / args.dataset
-    mdl_dir.mkdir(parents=True, exist_ok=True)
-    for name, m in models.items():
-        torch.save(m.state_dict(),
-                   mdl_dir / f"{name}_seed{args.seed}_n{har_n}.pth")
+    # ── save weights
+    base_mod = pathlib.Path("models")/norm_dir/args.dataset
+    base_mod.mkdir(parents=True, exist_ok=True)
+    for name,m in models.items():
+        torch.save(
+            m.state_dict(),
+            base_mod/f"{name}_seed{args.seed}_lp{lp_str}_n{har_n}.pth"
+        )
 
-    # ------------------ save metrics ------------------
+    # ── save metrics
+    base_res = pathlib.Path("results")/norm_dir
+    base_res.mkdir(parents=True, exist_ok=True)
     half = ep // 2
     metrics = {
-        "dataset":      args.dataset,
-        "seed":         args.seed,
-        "n_exp":        har_n,
-        "soft_hist_tr": hist['softmax']['tr'][:ep],
-        "soft_hist_te": hist['softmax']['te'][:ep],
-        "har_hist_tr":  hist['harmax']['tr'][:ep],
-        "har_hist_te":  hist['harmax']['te'][:ep],
-        "soft_last_te": float(hist['softmax']['te'][ep-1]),
-        "har_last_te":  float(hist['harmax']['te'][ep-1]),
-        "soft_mean_te": float(np.mean(hist['softmax']['te'][half:ep])),
-        "har_mean_te":  float(np.mean(hist['harmax']['te'][half:ep])),
+        "dataset":     args.dataset,
+        "seed":        args.seed,
+        "lp":          lp_str,
+        "n_exp":       har_n,
+        "soft_last":   hist["softmax"]["te"][ep-1],
+        "har_last":    hist["harmax"]["te"][ep-1],
+        "soft_mean":   float(np.mean(hist["softmax"]["te"][half:ep])),
+        "har_mean":    float(np.mean(hist["harmax"]["te"][half:ep])),
+        "hist":        hist
     }
-    res_dir = pathlib.Path("results"); res_dir.mkdir(exist_ok=True)
-    with (res_dir / f"{args.dataset}_seed{args.seed}_n{har_n}.json").open("w") as f:
+    with (base_res/f"{args.dataset}_seed{args.seed}_lp{lp_str}_n{har_n}.json").open("w") as f:
         json.dump(metrics, f, indent=2)
 
     logging.info("Finished")

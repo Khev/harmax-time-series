@@ -57,11 +57,102 @@ def plot_embeddings_comparison(
     ax.scatter(centers_har_pca[:,0], centers_har_pca[:,1],
                c='k', marker='*', s=200, label='Centers')
     ax.set_title(f'(a) Harmax PCA – EV {ev_har:.1f}%')
+    ax.set_xlabel('PC1'); ax.set_ylabel('PC2')
+    ax.legend(loc='best'); ax.set_aspect('equal')
+
+    # ─── Harmax t-SNE ─────────────────────────────────────────────────────
+    combo = np.vstack([harmax_embeddings, harmax_centres])
+    n_pts = combo.shape[0]
+    perp = min(tsne_perplexity, max(5, (n_pts - 1)//3))
+    tsne = TSNE(n_components=2, perplexity=perp, random_state=random_state)
+    combo_tsne = tsne.fit_transform(combo)
+    data_tsne, centers_tsne = combo_tsne[:len(harmax_embeddings)], combo_tsne[len(harmax_embeddings):]
+    ax = axs[0,1]
+    for cls in np.unique(labels):
+        m = labels == cls
+        ax.scatter(data_tsne[m,0], data_tsne[m,1], s=30, alpha=0.6, label=f'Class {cls}')
+    ax.scatter(centers_tsne[:,0], centers_tsne[:,1],
+               c='k', marker='*', s=200, label='Centers')
+    ax.set_title('(b) Harmax t-SNE'); ax.set_xlabel('t-SNE 1'); ax.set_ylabel('t-SNE 2')
+    ax.legend(loc='best'); ax.set_aspect('equal')
+
+    # ─── Softmax PCA ───────────────────────────────────────────────────────
+    pca = PCA(n_components=2)
+    soft_pca = pca.fit_transform(softmax_embeddings)
+    ev_soft = pca.explained_variance_ratio_.sum() * 100
+    centers_soft_pca = pca.transform(softmax_weights)
+    ax = axs[1,0]
+    for cls in np.unique(labels):
+        m = labels == cls
+        ax.scatter(soft_pca[m,0], soft_pca[m,1], s=30, alpha=0.6, label=f'Class {cls}')
+    ax.scatter(centers_soft_pca[:,0], centers_soft_pca[:,1],
+               c='k', marker='*', s=200, label='Weights')
+    ax.set_title(f'(c) Softmax PCA – EV {ev_soft:.1f}%')
+    ax.set_xlabel('PC1'); ax.set_ylabel('PC2')
+    ax.legend(loc='best'); ax.set_aspect('equal')
+
+    # ─── Softmax t-SNE ────────────────────────────────────────────────────
+    combo = np.vstack([softmax_embeddings, softmax_weights])
+    # reuse the same perp and random_state
+    tsne = TSNE(n_components=2, perplexity=perp, random_state=random_state)
+    combo_tsne = tsne.fit_transform(combo)
+    data_tsne, centers_tsne = combo_tsne[:len(softmax_embeddings)], combo_tsne[len(softmax_embeddings):]
+    ax = axs[1,1]
+    for cls in np.unique(labels):
+        m = labels == cls
+        ax.scatter(data_tsne[m,0], data_tsne[m,1], s=30, alpha=0.6, label=f'Class {cls}')
+    ax.scatter(centers_tsne[:,0], centers_tsne[:,1],
+               c='k', marker='*', s=200, label='Weights')
+    ax.set_title('(d) Softmax t-SNE'); ax.set_xlabel('t-SNE 1'); ax.set_ylabel('t-SNE 2')
+    ax.legend(loc='best'); ax.set_aspect('equal')
+
+    plt.tight_layout()
+    save_path.parent.mkdir(exist_ok=True, parents=True)
+    plt.savefig(save_path, dpi=120)
+    plt.close(fig)
+
+
+
+def plot_embeddings_comparison_old(
+    harmax_embeddings: np.ndarray,
+    softmax_embeddings: np.ndarray,
+    labels: np.ndarray,
+    harmax_centres: np.ndarray,
+    softmax_weights: np.ndarray,
+    save_path: pathlib.Path,
+    figsize=(10,10),
+    tsne_perplexity=30,
+    random_state=0
+):
+    """
+    Produces a 2×2 figure:
+      (a) Harmax PCA
+      (b) Harmax t-SNE
+      (c) Softmax PCA
+      (d) Softmax t-SNE
+    and saves to `save_path`.
+    """
+    fig, axs = plt.subplots(2, 2, figsize=figsize)
+
+    # ─── Harmax PCA ────────────────────────────────────────────────────────
+    pca = PCA(n_components=2)
+    har_pca = pca.fit_transform(harmax_embeddings)
+    ev_har = pca.explained_variance_ratio_.sum() * 100
+    centers_har_pca = pca.transform(harmax_centres)
+    ax = axs[0,0]
+    for cls in np.unique(labels):
+        m = labels == cls
+        ax.scatter(har_pca[m,0], har_pca[m,1], s=30, alpha=0.6, label=f'Class {cls}')
+    ax.scatter(centers_har_pca[:,0], centers_har_pca[:,1],
+               c='k', marker='*', s=200, label='Centers')
+    ax.set_title(f'(a) Harmax PCA – EV {ev_har:.1f}%')
     ax.set_xlabel('PC1'); ax.set_ylabel('PC2'); ax.legend(); ax.set_aspect('equal')
 
     # ─── Harmax t-SNE ─────────────────────────────────────────────────────
     combo = np.vstack([harmax_embeddings, harmax_centres])
-    tsne = TSNE(n_components=2, perplexity=tsne_perplexity, random_state=random_state)
+    perp = max(5, min(30, (n_pts-1)//3))
+    tsne = TSNE(n_components=2, perplexity=perp, random_state=0)
+    #tsne = TSNE(n_components=2, perplexity=tsne_perplexity, random_state=random_state)
     combo_tsne = tsne.fit_transform(combo)
     data_tsne, centers_tsne = combo_tsne[:len(harmax_embeddings)], combo_tsne[len(harmax_embeddings):]
     ax = axs[0,1]
@@ -89,7 +180,7 @@ def plot_embeddings_comparison(
 
     # ─── Softmax t-SNE ────────────────────────────────────────────────────
     combo = np.vstack([softmax_embeddings, softmax_weights])
-    tsne = TSNE(n_components=2, perplexity=tsne_perplexity, random_state=random_state)
+    tsne = TSNE(n_components=2, perplexity=perp, random_state=random_state)
     combo_tsne = tsne.fit_transform(combo)
     data_tsne, centers_tsne = combo_tsne[:len(softmax_embeddings)], combo_tsne[len(softmax_embeddings):]
     ax = axs[1,1]
@@ -193,4 +284,20 @@ def plot_prototypes_old(
     save_path.parent.mkdir(exist_ok=True, parents=True)
     plt.savefig(save_path, dpi=120)
     plt.close(fig)
+
+
+
+def load_dataset_aeon(name, split="train"):
+    if load_classification is None:
+        raise RuntimeError("aeon missing – install it or use --data_dir")
+    try:
+        X, y = load_classification(name, split=split, return_type="numpy3d")
+    except TypeError:
+        X, y = load_classification(name, split=split)
+    if isinstance(X, np.ndarray) and X.ndim == 3:
+        X = X[:, 0, :]
+    else:
+        from aeon.utils import convert_series_to_array
+        X = convert_series_to_array(X)
+    return X.astype("float32"), y.astype("int64")
 
