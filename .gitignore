@@ -1,0 +1,47 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*.so
+*.ipynb_checkpoints
+
+# Virtual environments
+env/
+.venv/
+*.env
+*.venv
+
+# Logs
+*.log
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Model checkpoints
+models/
+*.pth
+
+# Results and figures
+results/
+figures/
+
+# AEON cache (if used)
+aeon_data/
+aeon_downloads/
+
+# Compressed files
+*.zip
+*.tar.gz
+*.tar
+
+# Notebooks
+*.checkpoint.ipynb
+#roughwork.ipynb
+
+# VS Code / PyCharm IDE
+.vscode/
+.idea/
+
+# Mac metadata
+._*
+
