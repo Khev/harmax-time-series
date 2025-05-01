@@ -115,6 +115,50 @@ def plot_prototypes(
     softmax_embeddings: np.ndarray,
     softmax_weights: np.ndarray,
     save_path: pathlib.Path,
+    figsize_unit=(5,5)
+):
+    """
+    Finds the nearest in-class prototype for each centre/weight,
+    then plots 2 rows (harmax, softmax) × n_classes columns.
+    """
+    def _closest(emb, centres):
+        idxs = []
+        for j, c in enumerate(centres):
+            cls_idx = np.where(labels == j)[0]
+            d = np.linalg.norm(emb[cls_idx] - c, axis=1)
+            idxs.append(cls_idx[np.argmin(d)])
+        return idxs
+
+    h_idx = _closest(harmax_embeddings, harmax_centres)
+    s_idx = _closest(softmax_embeddings, softmax_weights)
+    n_cls = len(h_idx)
+
+    fig, axs = plt.subplots(2, n_cls, figsize=(figsize_unit[0]*n_cls, figsize_unit[1]*2))
+    for row, (idxs, title) in enumerate(zip([h_idx, s_idx], ['Harmax', 'Softmax'])):
+        for i, idx in enumerate(idxs):
+            ax = axs[row, i] if n_cls > 1 else axs[row]
+            cls = i
+            # plot all series of this class
+            for j, x in enumerate(X_raw):
+                if labels[j] == cls:
+                    ax.plot(x, color='gray', alpha=0.1)
+            # overlay prototype
+            ax.plot(X_raw[idx], color='blue', lw=2)
+            ax.set_title(f"{title} Class {cls} (idx={idx})")
+            ax.set_xlabel('Timestep'); ax.set_ylabel('Value')
+    plt.tight_layout()
+    save_path.parent.mkdir(exist_ok=True, parents=True)
+    plt.savefig(save_path, dpi=120)
+    plt.close(fig)
+
+def plot_prototypes_old(
+    X_raw: np.ndarray,
+    labels: np.ndarray,
+    harmax_embeddings: np.ndarray,
+    harmax_centres: np.ndarray,
+    softmax_embeddings: np.ndarray,
+    softmax_weights: np.ndarray,
+    save_path: pathlib.Path,
     figsize=(10,5)
 ):
     """

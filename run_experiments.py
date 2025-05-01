@@ -43,14 +43,25 @@ def load_metrics(ds: str, seed: int, n_exp: int):
 # ------------------------------------------------------------------ #
 def main():
     ap = argparse.ArgumentParser()
+    # ap.add_argument("--datasets", nargs="+", default=[
+    #     "ECG200", "Coffee", "GunPoint", "ItalyPowerDemand",
+    #     "ShapeletSim", "Plane", "OliveOil", "FordA",
+    #     "StarLightCurves", "HandOutlines",
+    # ])
+    # ap.add_argument("--datasets", nargs="+", default=[
+    #     "SyntheticControl",
+    #     "ShapeletSim",
+    #     "TwoPatterns",
+    #     "Coffee",
+    #     "OliveOil",
+    #     "bump3",
+    # ])
     ap.add_argument("--datasets", nargs="+", default=[
-        "ECG200", "Coffee", "GunPoint", "ItalyPowerDemand",
-        "ShapeletSim", "Plane", "OliveOil", "FordA",
-        "StarLightCurves", "HandOutlines",
+        "bump3","sine_freq","step_pos", "square_duty"
     ])
-    ap.add_argument("--epochs", type=int, default=800)
+    ap.add_argument("--epochs", type=int, default=100)
     ap.add_argument("--seed",   type=int, default=0)
-    ap.add_argument("--n_exp",  type=int, default=7,
+    ap.add_argument("--n_exp",  type=int, default=1,
                     help="harmonic exponent n passed to the training script")
     args = ap.parse_args()
 

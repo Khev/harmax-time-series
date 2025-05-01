@@ -7,50 +7,44 @@
 #   • saves plots         → figures/
 # ---------------------------------------------------------------------
 import argparse, math, pathlib, random, json, warnings
-
 from typing import Tuple
-
+from sklearn.decomposition import PCA        # ⟨NEW⟩ for 2-D visualisation
 import numpy as np
 import torch
 import torch.nn as nn
 from torch.utils.data import TensorDataset, DataLoader
 from scipy.stats import zscore
+import logging
 
-from sklearn.decomposition import PCA        # ⟨NEW⟩ for 2-D visualisation
-# -------------------------------------------------------------- imports
+# force Agg backend so this works in headless
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+
+# ⟨NEW⟩ import our plotting utilities
+from utils.utils_plotting import (
+    get_embeddings,
+    plot_embeddings_comparison,
+    plot_prototypes
+)
+
+from utils.utils_synthetic_datasets import make_synthetic_dataset
+
+# Configure logging: timestamps in YYYY-MM-DD HH:MM:SS format
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s  %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S"
+)
+
+
+# optional aeon loader
 try:
-    from aeon.datasets import load_classification          # optional
+    from aeon.datasets import load_classification
 except ModuleNotFoundError:
     load_classification = None
     warnings.warn("aeon not found – will only load local .txt files")
 
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
-# ---------------------------------------------------------------------
-
-
-# ------------------------------- synthetic “phase-wheel” -------------
-def make_phase_wheel(
-        n_classes=8, samples_per_class=400, length=128,
-        freq=3.0, noise_std=0.15, seed=0):
-    """
-    Simple toy set: sine-waves with equally spaced phase-shifts.
-    """
-    rng = np.random.default_rng(seed)
-    t = np.linspace(0, 1, length, endpoint=False)
-
-    X, y = [], []
-    for k in range(n_classes):
-        phi = 2 * np.pi * k / n_classes
-        centre = np.sin(2 * np.pi * freq * t + phi)
-        amps = 1.0 + rng.normal(0, 0.05, size=samples_per_class)
-        noise = rng.normal(0, noise_std, size=(samples_per_class, length))
-        Xk = amps[:, None] * centre + noise
-        X.append(Xk)
-        y.append(np.full(samples_per_class, k))
-
-    return np.vstack(X).astype("float32"), np.concatenate(y).astype("int64")
 
 
 # ------------------------- misc helpers ------------------------------
@@ -81,11 +75,11 @@ def load_dataset_aeon(name, split="train"):
         raise RuntimeError("aeon missing – install it or use --data_dir")
     try:
         X, y = load_classification(name, split=split, return_type="numpy3d")
-    except TypeError:                       # older aeon
+    except TypeError:
         X, y = load_classification(name, split=split)
     if isinstance(X, np.ndarray) and X.ndim == 3:
         X = X[:, 0, :]
-    else:                                   # nested DF → array
+    else:
         from aeon.utils import convert_series_to_array
         X = convert_series_to_array(X)
     return X.astype("float32"), y.astype("int64")
@@ -102,7 +96,7 @@ class Encoder1D(nn.Module):
             nn.Linear(128, d), nn.ReLU()
         )
 
-    def forward(self, x):                   # x: (B, L)
+    def forward(self, x):
         return self.net(x.unsqueeze(1))
 
 
@@ -154,36 +148,9 @@ def run_epoch(model, is_h, loader, crit, opt, dev):
 
 
 class Wrap(nn.Module):
-    """Tiny container so we can keep `.is_harmax` flag together."""
     def __init__(self, enc, head, is_h):
         super().__init__()
         self.encoder, self.head, self.is_harmax = enc, head, is_h
-
-
-# --------------------------- plotting helpers ------------------------
-def plot_pca(models: dict, dataset: str, out_tag: str):
-    """
-    Make 2-D PCA scatter of the per-class vectors (weights or centres).
-    """
-    def vecs(mod):
-        return (mod.head.centres if mod.is_harmax
-                else mod.head.logits.weight).detach().cpu().numpy()
-
-    fig, ax = plt.subplots(1, 2, figsize=(8, 4))
-    for i, (name, mod) in enumerate(models.items()):
-        X = vecs(mod)
-        pcs = PCA(2).fit_transform(X)
-        ev = PCA(2).fit(X).explained_variance_ratio_.sum() * 100
-        ax[i].scatter(pcs[:, 0], pcs[:, 1], s=35)
-        for j, (x, y) in enumerate(pcs):
-            ax[i].text(x, y, str(j), ha='center', va='center', fontsize=7)
-        ax[i].set_aspect('equal')
-        ax[i].set_title(f"{name}  EV:{ev:0.0f}%")
-    fig.tight_layout()
-    p = pathlib.Path("figures")
-    p.mkdir(exist_ok=True)
-    fig.savefig(p / f"{dataset}_pca_{out_tag}.png", dpi=120)
-    plt.close(fig)
 
 
 # ------------------------------ main ---------------------------------
@@ -191,7 +158,7 @@ def main():
     pa = argparse.ArgumentParser()
     pa.add_argument('--dataset', default='ECG200')
     pa.add_argument('--data_dir', default='')
-    pa.add_argument('--epochs', type=int, default=400)
+    pa.add_argument('--epochs', type=int, default=100)
     pa.add_argument('--batch',  type=int, default=32)
     pa.add_argument('--lr',     type=float, default=3e-3)
     pa.add_argument('--wd',     type=float, default=1e-2)
@@ -210,9 +177,12 @@ def main():
         dd = pathlib.Path(args.data_dir)
         Xtr, ytr = load_ucr_txt(dd / f"{args.dataset}_TRAIN.txt")
         Xte, yte = load_ucr_txt(dd / f"{args.dataset}_TEST.txt")
-    elif args.dataset.lower() == "phasewheel":
-        Xtr, ytr = make_phase_wheel(n_classes=8, samples_per_class=300, seed=args.seed)
-        Xte, yte = make_phase_wheel(n_classes=8, samples_per_class=300, seed=999 + args.seed)
+        
+    elif args.dataset.lower() in ["bump3", "sine_freq", "step_pos", "square_duty"]:
+        # synthetic series
+        Xtr, ytr = make_synthetic_dataset(args.dataset.lower(), seed=args.seed)
+        Xte, yte = make_synthetic_dataset(args.dataset.lower(), seed=999 + args.seed)
+
     else:
         Xtr, ytr = load_dataset_aeon(args.dataset, "train")
         Xte, yte = load_dataset_aeon(args.dataset, "test")
@@ -222,14 +192,17 @@ def main():
     ytr = np.vectorize(uniq.get)(ytr); yte = np.vectorize(uniq.get)(yte)
     n_cls = len(uniq)
 
+    # ⟨NEW⟩ keep raw for prototype plotting
+    Xte_raw = Xte.copy()
+
     # per-series z-score
-    Xtr, Xte = zscore(Xtr, axis=1), zscore(Xte, axis=1)
+    #Xtr, Xte = zscore(Xtr, axis=1), zscore(Xte, axis=1)
     print(f"{args.dataset}: {Xtr.shape} → {n_cls} classes")
 
     tr_dl = DataLoader(TensorDataset(torch.tensor(Xtr), torch.tensor(ytr)),
-                       batch_size=args.batch, shuffle=True, drop_last=False)
+                       batch_size=args.batch, shuffle=True)
     te_dl = DataLoader(TensorDataset(torch.tensor(Xte), torch.tensor(yte)),
-                       batch_size=args.batch, drop_last=False)
+                       batch_size=args.batch)
 
     models = {
         "softmax": Wrap(Encoder1D(64), SoftmaxHead(64, n_cls), False),
@@ -249,7 +222,7 @@ def main():
             te_l, te_a = run_epoch(m, m.is_harmax, te_dl, crit[n], None, dev)
             hist[n]['tr'].append(tr_a); hist[n]['te'].append(te_a)
         if ep % 50 == 0 or ep == 1:
-            print(f"Ep {ep:3d}  " +
+            logging.info(f"Ep {ep:3d}  " +
                   " ".join(f"{n}:{hist[n]['te'][-1]*100:.1f}%" for n in models))
 
     har_n = models['harmax'].head.n_exp
@@ -268,8 +241,28 @@ def main():
         fig.savefig(f"figures/{args.dataset}_acc_n{har_n}.png", dpi=120)
         plt.close(fig)
 
-        # ⟨NEW⟩ 2-D PCA of the class vectors
-        plot_pca(models, args.dataset, f"n{har_n}")
+        # ⟨NEW⟩ embeddings + t-SNE comparison
+        har_emb, har_lbls = get_embeddings(models['harmax'], te_dl, dev)
+        soft_emb, _       = get_embeddings(models['softmax'], te_dl, dev)
+        plot_embeddings_comparison(
+            harmax_embeddings=har_emb,
+            softmax_embeddings=soft_emb,
+            labels=har_lbls,
+            harmax_centres=models['harmax'].head.centres.detach().cpu().numpy(),
+            softmax_weights=models['softmax'].head.logits.weight.detach().cpu().numpy(),
+            save_path=pathlib.Path(f"figures/{args.dataset}_embeddings.png")
+        )
+
+        # ⟨NEW⟩ representative prototypes
+        plot_prototypes(
+            X_raw=Xte_raw,
+            labels=har_lbls,
+            harmax_embeddings=har_emb,
+            harmax_centres=models['harmax'].head.centres.detach().cpu().numpy(),
+            softmax_embeddings=soft_emb,
+            softmax_weights=models['softmax'].head.logits.weight.detach().cpu().numpy(),
+            save_path=pathlib.Path(f"figures/{args.dataset}_prototypes.png")
+        )
 
     # ------------------ save weights ------------------
     mdl_dir = pathlib.Path("models") / args.dataset
@@ -294,6 +287,8 @@ def main():
     res_dir = pathlib.Path("results"); res_dir.mkdir(exist_ok=True)
     with (res_dir / f"{args.dataset}_seed{args.seed}_n{har_n}.json").open("w") as f:
         json.dump(metrics, f, indent=2)
+
+    logging.info('Finished')
 
 
 if __name__ == "__main__":
